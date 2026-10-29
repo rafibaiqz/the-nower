@@ -3,11 +3,18 @@
  * mirrors what the server says into the UI store and handles reconnection with the
  * per-seat session token.
  */
-import { io, type Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
 import type { Ack, JoinAck, LobbyInfo, MatchInit } from '@nower/shared';
 import { store } from '../state/store';
+import { WsTransport, type ClientSocket } from './wsTransport';
 
 export const SERVER_URL: string = (import.meta.env.VITE_SERVER_URL as string | undefined)?.trim() || (import.meta.env.DEV ? `${location.protocol}//${location.hostname}:3001` : location.origin);
+
+/**
+ * 'socketio' (default): the Node.js server. 'ws': the Cloudflare Worker / Durable Object, built
+ * with `vite build --mode cloudflare` (client/.env.cloudflare).
+ */
+export const TRANSPORT: 'ws' | 'socketio' = import.meta.env.VITE_TRANSPORT === 'ws' ? 'ws' : 'socketio';
 
 const SESSION_KEY = 'nower.session';
 
@@ -37,7 +44,7 @@ function writeSession(s: Session | null) {
 type MatchHandler = (init: MatchInit, resumed: boolean) => void;
 
 class Net {
-  socket: Socket | null = null;
+  socket: ClientSocket | null = null;
   private session: Session | null = readSession();
   private onMatch: MatchHandler | null = null;
   private onReturned: (() => void) | null = null;
@@ -60,7 +67,7 @@ class Net {
     this.onReturned = h;
   }
 
-  connect(): Promise<Socket> {
+  connect(): Promise<ClientSocket> {
     if (this.socket?.connected) return Promise.resolve(this.socket);
     if (!this.socket) this.createSocket();
     store.getState().set({ conn: 'connecting' });
@@ -85,21 +92,24 @@ class Net {
   }
 
   private createSocket() {
-    const s = io(SERVER_URL, {
-      transports: ['websocket', 'polling'],
-      autoConnect: false,
-      reconnection: true,
-      reconnectionDelay: 800,
-      reconnectionDelayMax: 4000,
-      timeout: 8000,
-    });
+    const s: ClientSocket =
+      TRANSPORT === 'ws'
+        ? new WsTransport(`${SERVER_URL.replace(/^http/, 'ws').replace(/\/$/, '')}/ws`)
+        : (io(SERVER_URL, {
+            transports: ['websocket', 'polling'],
+            autoConnect: false,
+            reconnection: true,
+            reconnectionDelay: 800,
+            reconnectionDelayMax: 4000,
+            timeout: 8000,
+          }) as unknown as ClientSocket);
     this.socket = s;
     s.on('connect', () => {
       store.getState().set({ conn: 'connected' });
       if (this.everConnected && this.session) void this.resume();
       this.everConnected = true;
     });
-    s.on('disconnect', (reason) => {
+    s.on('disconnect', (reason: string) => {
       const st = store.getState();
       if (reason === 'io client disconnect') {
         st.set({ conn: 'idle' });

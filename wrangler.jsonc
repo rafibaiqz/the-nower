@@ -1,0 +1,39 @@
+// Cloudflare Workers deployment of THE NOWER (web client + multiplayer server).
+// Run Wrangler from the repository root: this is an npm workspace and the Worker needs
+// server/ (entry + game server), shared/ (game rules) and client/dist (built web client).
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Must match the Worker's name in the Cloudflare dashboard.
+  "name": "the-nower",
+  "main": "server/src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  // Wrangler builds the web client itself before every deploy / dev / dry-run, in Cloudflare mode
+  // (raw WebSocket transport). This keeps `npx wrangler deploy` correct whatever the dashboard's
+  // build command produced in client/dist (a plain `npm run build` targets the Socket.IO server).
+  "build": {
+    "command": "npm run build:cloudflare",
+    "watch_dir": "client/src"
+  },
+  // The built web client (npm run build:cloudflare). Game traffic goes to the Worker first.
+  "assets": {
+    "directory": "./client/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/ws", "/health", "/healthz"]
+  },
+  // One authoritative game server instance holding all lobbies and matches.
+  "durable_objects": {
+    "bindings": [{ "name": "GAME", "class_name": "GameServer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameServer"] }],
+  "vars": {
+    // Same-origin connections are always allowed; list other origins here (comma-separated) if the
+    // client is hosted elsewhere, e.g. "https://nower.example.com".
+    "CLIENT_ORIGIN": "*",
+    "MAX_PLAYERS": "4",
+    "MAX_LOBBIES": "200",
+    "LOBBY_IDLE_MINUTES": "30",
+    "LOG_LEVEL": "info"
+  },
+  "observability": { "enabled": true }
+}

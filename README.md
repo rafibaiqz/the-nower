@@ -42,6 +42,9 @@ STATIC_DIR=client/dist npm start      # open http://localhost:3001
 | `npm run photos` | Visual tour: screenshots of key areas into `test-results/tour/`. `-- --set=stairs` photographs every stairwell, `-- --set=audit` a list of risky areas. |
 | `npm run map [floor]` | Prints ASCII maps of the estate (0 sewer … 4 attic) |
 | `npm run test:all` | typecheck, unit tests, build, e2e |
+| `npm run dev:cloudflare` | Run the Cloudflare Worker + Durable Object locally (`wrangler dev`, http://127.0.0.1:8787) |
+| `npm run check:cloudflare` | Cloudflare build and `wrangler deploy --dry-run` (no account needed) |
+| `npm run deploy:cloudflare` | Deploy to Cloudflare Workers (`wrangler deploy`, needs `wrangler login`) |
 
 `npm run e2e` opens Chrome in an off-screen window so WebGL uses the GPU. Pass `--software` for headless SwiftShader (CI-friendly, but only a few frames per second), or `--url=https://your-deployment` to test a running deployment.
 
@@ -60,12 +63,15 @@ See [`.env.example`](.env.example).
 | `STATIC_DIR` | server | *(empty)* | Serve the built client from this directory (single-service deploy) |
 | `LOG_LEVEL` | server | `info` | `debug`, `info`, `warn` or `error` |
 | `VITE_SERVER_URL` | client (build time) | same origin; `http://<host>:3001` in dev | Public URL of the game server. Must be `https://` in production so the socket uses `wss://`. |
+| `VITE_TRANSPORT` | client (build time) | *(empty: Socket.IO)* | `ws` for the Cloudflare Worker. Set automatically by `--mode cloudflare` (`client/.env.cloudflare`). |
+
+On Cloudflare, the server variables except `PORT`, `HOST` and `STATIC_DIR` are set under `vars` in [`wrangler.jsonc`](wrangler.jsonc) (or in the dashboard).
 
 No secrets are needed. The client never embeds anything beyond the public server URL.
 
 ## Deployment
 
-The game needs a **persistent Node.js process** for WebSockets. Static hosts (Netlify, Cloudflare Pages, GitHub Pages) can serve the client but cannot run the game server.
+The game needs a long-lived, authoritative game server holding WebSockets: either a **persistent Node.js process** (options A and B) or a **Cloudflare Durable Object** (option C). Purely static hosts (Netlify, Cloudflare Pages, GitHub Pages) can serve the client but can't run the game server.
 
 ### Option A: one container (recommended)
 
@@ -86,6 +92,29 @@ The image builds both packages and runs the server with `STATIC_DIR` set, so the
 1. Deploy the server (Docker image, or `npm ci && npm run build -w server && node server/dist/index.js`) and note its public URL, e.g. `https://nower-server.example.com`.
 2. On the server, set `CLIENT_ORIGIN=https://your-client-domain`.
 3. Build the client with `VITE_SERVER_URL=https://nower-server.example.com npm run build -w client`, then upload `client/dist/` to the static host (a single-page app; no rewrites needed).
+
+### Option C: Cloudflare Workers (Worker + Durable Object)
+
+A plain Worker is stateless and has no Node `http` server, so Socket.IO can't run there. The Cloudflare build therefore uses:
+
+- [`server/src/worker.ts`](server/src/worker.ts): the Worker serves the built client from static assets and routes `/ws` and `/health` to one `GameServer` **Durable Object**. That object runs the same `LobbyManager` / `Match` / AI code as the Node server.
+- A small JSON-over-WebSocket protocol ([`server/src/net/wsHub.ts`](server/src/net/wsHub.ts), [`client/src/net/wsTransport.ts`](client/src/net/wsTransport.ts)) with acks, room broadcasts, ping and auto-reconnect. The lobby and game handlers are shared with the Socket.IO server ([`server/src/net/handlers.ts`](server/src/net/handlers.ts)).
+- [`wrangler.jsonc`](wrangler.jsonc) **at the repository root**. Wrangler must run from the root because the Worker needs `server/`, `shared/` and `client/dist`, and the npm workspace lockfile lives there. The config's `build.command` runs `npm run build:cloudflare` (the client in WebSocket mode) before every `wrangler deploy` and `wrangler dev`.
+
+Cloudflare dashboard (Workers & Pages → the Worker → Settings → Build):
+
+| Setting | Value |
+| --- | --- |
+| Root directory | *(empty, the repository root)* |
+| Build command | `npm run build:cloudflare` (optional; the deploy step builds the client too) |
+| Deploy command | `npx wrangler deploy` |
+| Non-production branch deploy command | `npx wrangler versions upload` |
+
+The Worker's name in the dashboard must match `"name"` in `wrangler.jsonc` (`the-nower`). Node 22 is required by Wrangler (`.node-version`). The Durable Object uses SQLite storage (`new_sqlite_classes`), which the Workers Free plan supports. Its first deployment, which applies migration `v1`, must be a production `wrangler deploy`.
+
+From a terminal: `npx wrangler login`, then `npm run deploy:cloudflare`.
+
+Limits of this option: all lobbies share one Durable Object, the equivalent of one Node process. A new deployment restarts it, which ends matches in progress, and lobbies only exist while it is running. WebSockets don't use hibernation, so the 20 Hz match loop keeps running. The object stays resident and billed for duration while players are connected.
 
 ### Verifying an internet deployment
 

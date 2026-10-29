@@ -3,8 +3,6 @@
  * only here; clients are told about them. Each player gets a secret reconnection token so a
  * dropped connection (refresh, network blip) can resume the same identity without duplicates.
  */
-import { randomBytes } from 'node:crypto';
-import type { Server, Socket } from 'socket.io';
 import {
   DEFAULT_DIFFICULTY,
   DIFFICULTY,
@@ -20,6 +18,8 @@ import {
 import { config } from '../config';
 import { log } from '../log';
 import { Match } from '../match/Match';
+import { randomBytes, randomHex } from '../net/random';
+import type { Conn, Hub } from '../net/transport';
 
 export interface Member {
   id: string;
@@ -53,7 +53,7 @@ export class LobbyManager {
   private socketIndex = new Map<string, { code: string; playerId: string }>();
   private sweeper: ReturnType<typeof setInterval>;
 
-  constructor(private io: Server) {
+  constructor(private hub: Hub) {
     this.sweeper = setInterval(() => this.sweep(), 5000);
   }
 
@@ -77,10 +77,10 @@ export class LobbyManager {
   }
 
   private newId() {
-    return randomBytes(8).toString('hex');
+    return randomHex(8);
   }
 
-  memberOf(socket: Socket): { lobby: Lobby; member: Member } | null {
+  memberOf(socket: Conn): { lobby: Lobby; member: Member } | null {
     const idx = this.socketIndex.get(socket.id);
     if (!idx) return null;
     const lobby = this.lobbies.get(idx.code);
@@ -121,13 +121,13 @@ export class LobbyManager {
   }
 
   broadcastLobby(lobby: Lobby) {
-    this.io.to(this.room(lobby.code)).emit('lobby:update', this.info(lobby));
+    this.hub.toRoom(this.room(lobby.code), 'lobby:update', this.info(lobby));
   }
 
-  private attach(socket: Socket, lobby: Lobby, member: Member) {
+  private attach(socket: Conn, lobby: Lobby, member: Member) {
     // one socket = one seat; a token used from a new socket takes the seat over
     if (member.socketId && member.socketId !== socket.id) {
-      const old = this.io.sockets.sockets.get(member.socketId);
+      const old = this.hub.get(member.socketId);
       this.socketIndex.delete(member.socketId);
       if (old) {
         old.emit('session:replaced', { reason: 'This seat was taken over by another tab or device.' });
@@ -142,17 +142,17 @@ export class LobbyManager {
   }
 
   /** Detach a socket from any lobby it currently occupies (used before create/join). */
-  private detachExisting(socket: Socket) {
+  private detachExisting(socket: Conn) {
     const cur = this.memberOf(socket);
     if (cur) this.leave(socket);
   }
 
-  create(socket: Socket, name: string): Result<JoinAck> {
+  create(socket: Conn, name: string): Result<JoinAck> {
     if (this.lobbies.size >= config.maxLobbies) return { ok: false, error: 'The server is full. Try again later.' };
     this.detachExisting(socket);
     const code = this.newCode();
     const id = this.newId();
-    const token = randomBytes(24).toString('hex');
+    const token = randomHex(24);
     const member: Member = { id, name, token, socketId: null, ready: false, color: PLAYER_COLORS[0], disconnectedAt: null };
     const lobby: Lobby = {
       code,
@@ -173,7 +173,7 @@ export class LobbyManager {
     return { ok: true, data: { lobby: this.info(lobby), playerId: id, token } };
   }
 
-  join(socket: Socket, code: string, name: string): Result<JoinAck> {
+  join(socket: Conn, code: string, name: string): Result<JoinAck> {
     const lobby = this.lobbies.get(code);
     if (!lobby) return { ok: false, error: `No lobby with code ${code}. Check the code and try again.` };
     if (lobby.state !== 'LOBBY') return { ok: false, error: 'That game has already started.' };
@@ -181,7 +181,7 @@ export class LobbyManager {
     if (seated.length >= lobby.settings.maxPlayers) return { ok: false, error: `That lobby is full (${lobby.settings.maxPlayers}/${lobby.settings.maxPlayers}).` };
     this.detachExisting(socket);
     const id = this.newId();
-    const token = randomBytes(24).toString('hex');
+    const token = randomHex(24);
     const used = new Set(seated.map((m) => m.color));
     const color = PLAYER_COLORS.find((c) => !used.has(c)) ?? PLAYER_COLORS[seated.length % PLAYER_COLORS.length];
     let finalName = name;
@@ -196,7 +196,7 @@ export class LobbyManager {
     return { ok: true, data: { lobby: this.info(lobby), playerId: id, token } };
   }
 
-  resume(socket: Socket, token: string): Result<JoinAck> {
+  resume(socket: Conn, token: string): Result<JoinAck> {
     const t = this.tokens.get(token);
     const lobby = t ? this.lobbies.get(t.code) : undefined;
     const member = t && lobby ? lobby.members.get(t.playerId) : undefined;
@@ -214,7 +214,7 @@ export class LobbyManager {
     return { ok: true, data: { lobby: this.info(lobby), playerId: member.id, token, match } };
   }
 
-  leave(socket: Socket) {
+  leave(socket: Conn) {
     const cur = this.memberOf(socket);
     if (!cur) return;
     const { lobby, member } = cur;
@@ -242,25 +242,25 @@ export class LobbyManager {
     if (!next) return;
     lobby.hostId = next.id;
     next.ready = false;
-    this.io.to(this.room(lobby.code)).emit('lobby:notice', { text: `${next.name} is now the host.` });
+    this.hub.toRoom(this.room(lobby.code), 'lobby:notice', { text: `${next.name} is now the host.` });
   }
 
   closeLobby(lobby: Lobby, reason: string) {
     lobby.match?.dispose();
     lobby.match = null;
-    this.io.to(this.room(lobby.code)).emit('lobby:closed', { reason });
+    this.hub.toRoom(this.room(lobby.code), 'lobby:closed', { reason });
     for (const m of lobby.members.values()) {
       this.tokens.delete(m.token);
       if (m.socketId) {
         this.socketIndex.delete(m.socketId);
-        this.io.sockets.sockets.get(m.socketId)?.leave(this.room(lobby.code));
+        this.hub.get(m.socketId)?.leave(this.room(lobby.code));
       }
     }
     this.lobbies.delete(lobby.code);
     log.info('lobby closed', { code: lobby.code, reason });
   }
 
-  setReady(socket: Socket, ready: boolean): Result<null> {
+  setReady(socket: Conn, ready: boolean): Result<null> {
     const cur = this.memberOf(socket);
     if (!cur) return { ok: false, error: 'Not in a lobby.' };
     if (cur.lobby.state !== 'LOBBY') return { ok: false, error: 'The match already started.' };
@@ -269,7 +269,7 @@ export class LobbyManager {
     return { ok: true, data: null };
   }
 
-  setSettings(socket: Socket, patch: { difficulty?: Difficulty; maxPlayers?: number }): Result<null> {
+  setSettings(socket: Conn, patch: { difficulty?: Difficulty; maxPlayers?: number }): Result<null> {
     const cur = this.memberOf(socket);
     if (!cur) return { ok: false, error: 'Not in a lobby.' };
     const { lobby, member } = cur;
@@ -287,7 +287,7 @@ export class LobbyManager {
     return { ok: true, data: null };
   }
 
-  start(socket: Socket): Result<null> {
+  start(socket: Conn): Result<null> {
     const cur = this.memberOf(socket);
     if (!cur) return { ok: false, error: 'Not in a lobby.' };
     const { lobby, member } = cur;
@@ -299,10 +299,10 @@ export class LobbyManager {
     const players = [...lobby.members.values()].map((m) => ({ id: m.id, name: m.name, color: m.color }));
     const room = this.room(lobby.code);
     const match = new Match(players, lobby.settings.difficulty, {
-      broadcast: (ev, data, vol) => (vol ? this.io.to(room).volatile.emit(ev, data) : this.io.to(room).emit(ev, data)),
+      broadcast: (ev, data, vol) => this.hub.toRoom(room, ev, data, vol),
       toPlayer: (pid, ev, data) => {
         const sid = lobby.members.get(pid)?.socketId;
-        if (sid) this.io.to(sid).emit(ev, data);
+        if (sid) this.hub.toConn(sid, ev, data);
       },
       onEnded: (result: MatchResult) => this.onMatchEnded(lobby, result),
     });
@@ -311,7 +311,7 @@ export class LobbyManager {
     lobby.lastActivity = Date.now();
     for (const m of lobby.members.values()) {
       m.ready = false;
-      if (m.socketId) this.io.to(m.socketId).emit('game:start', match.initFor(m.id));
+      if (m.socketId) this.hub.toConn(m.socketId, 'game:start', match.initFor(m.id));
     }
     match.start();
     log.info('match started', { code: lobby.code, players: players.length, difficulty: lobby.settings.difficulty });
@@ -325,7 +325,7 @@ export class LobbyManager {
   }
 
   /** Host returns everyone to the waiting room after a match. */
-  returnToLobby(socket: Socket): Result<null> {
+  returnToLobby(socket: Conn): Result<null> {
     const cur = this.memberOf(socket);
     if (!cur) return { ok: false, error: 'Not in a lobby.' };
     const { lobby, member } = cur;
@@ -345,11 +345,11 @@ export class LobbyManager {
       if (m.socketId === null) this.removeMember(lobby, m, 'disconnected during match');
     }
     if (!this.lobbies.has(lobby.code)) return;
-    this.io.to(this.room(lobby.code)).emit('lobby:returned', this.info(lobby));
+    this.hub.toRoom(this.room(lobby.code), 'lobby:returned', this.info(lobby));
     this.broadcastLobby(lobby);
   }
 
-  handleDisconnect(socket: Socket) {
+  handleDisconnect(socket: Conn) {
     const idx = this.socketIndex.get(socket.id);
     if (!idx) return;
     this.socketIndex.delete(socket.id);
@@ -399,7 +399,7 @@ export class LobbyManager {
     return { lobbies: this.lobbies.size, players, matches };
   }
 
-  touch(socket: Socket) {
+  touch(socket: Conn) {
     const cur = this.memberOf(socket);
     if (cur) cur.lobby.lastActivity = Date.now();
   }
