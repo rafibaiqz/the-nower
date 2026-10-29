@@ -196,6 +196,65 @@ describe('multiplayer match', () => {
     expect(bogus.ok).toBe(false);
   });
 
+  it('difficulty is host-controlled, synced, validated, locked in game, kept on reconnect and changeable for a rematch', async () => {
+    const a = await client();
+    let b = await client();
+    const created = await emit<JoinAck>(a, 'lobby:create', { name: 'Host' });
+    expect(created.data!.lobby.settings.difficulty).toBe('medium');
+    const code = created.data!.lobby.code;
+    const joined = await emit<JoinAck>(b, 'lobby:join', { name: 'Guest', code });
+    const bToken = joined.data!.token;
+
+    const seen = waitFor<LobbyInfo>(b, 'lobby:update', (l) => l.settings.difficulty === 'extreme');
+    expect((await emit(a, 'lobby:settings', { difficulty: 'extreme' })).ok).toBe(true);
+    await seen;
+    // a non-host cannot change it, and garbage is rejected
+    expect((await emit(b, 'lobby:settings', { difficulty: 'easy' })).ok).toBe(false);
+    const bad = await emit(a, 'lobby:settings', { difficulty: 'nightmare' });
+    expect(bad.ok).toBe(false);
+    expect(server.lobbies.lobbies.get(code)!.settings.difficulty).toBe('extreme');
+
+    await emit(b, 'lobby:ready', { ready: true });
+    const sa = waitFor<MatchInit>(a, 'game:start');
+    const sb = waitFor<MatchInit>(b, 'game:start');
+    expect((await emit(a, 'lobby:start')).ok).toBe(true);
+    const [ia, ib] = await Promise.all([sa, sb]);
+    expect(ia.difficulty).toBe('extreme');
+    expect(ib.difficulty).toBe('extreme');
+    const match = server.lobbies.lobbies.get(code)!.match!;
+    expect(match.tuning.label).toBe('EXTREME');
+    // locked while the match runs
+    expect((await emit(a, 'lobby:settings', { difficulty: 'easy' })).ok).toBe(false);
+
+    // a reconnecting player gets the same difficulty back
+    b.disconnect();
+    await new Promise((r) => setTimeout(r, 150));
+    b = await client();
+    const resumed = await emit<JoinAck>(b, 'lobby:resume', { token: bToken });
+    expect(resumed.data!.match!.difficulty).toBe('extreme');
+
+    // end the match (both caught on EXTREME = game over), return to the lobby, pick EASY, play again
+    const ended = waitEvent(a, (e) => e.k === 'phase' && e.phase === 'ENDED', 10000);
+    match.testSetPhasePlaying();
+    for (const p of match.players.keys()) match.capture(p);
+    for (let i = 0; i < 60; i++) match.tick(0.05);
+    await ended;
+    const returnedA = waitFor<LobbyInfo>(a, 'lobby:returned');
+    const returnedB = waitFor<LobbyInfo>(b, 'lobby:returned');
+    expect((await emit(a, 'lobby:return')).ok).toBe(true);
+    const [ra] = await Promise.all([returnedA, returnedB]);
+    expect(ra.state).toBe('LOBBY');
+    expect(ra.settings.difficulty).toBe('extreme');
+    expect((await emit(a, 'lobby:settings', { difficulty: 'easy' })).ok).toBe(true);
+    await emit(b, 'lobby:ready', { ready: true });
+    const again = waitFor<MatchInit>(b, 'game:start');
+    expect((await emit(a, 'lobby:start')).ok).toBe(true);
+    const ib2 = await again;
+    expect(ib2.difficulty).toBe('easy');
+    expect(ib2.seed).not.toBe(ib.seed);
+    expect(ib2.players.every((p) => p.status === 'free')).toBe(true);
+  });
+
   it('serves a health check', async () => {
     const res = await fetch(`${url}/health`);
     const body = (await res.json()) as { status: string };

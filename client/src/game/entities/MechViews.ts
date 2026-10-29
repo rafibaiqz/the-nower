@@ -46,7 +46,7 @@ export class MechViews {
   winchSpin = 0;
 
   constructor(
-    private level: Level,
+    level: Level,
     panelSymbols: string[],
     private valveWeights: number[],
     private valveTarget: number,

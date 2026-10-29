@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DEV_CREDIT, getLevel, itemDef } from '@nower/shared';
+import { DEV_CREDIT, DIFFICULTY, getLevel, itemDef } from '@nower/shared';
 import { audio } from '../game/audio/AudioEngine';
 import { net } from '../net/net';
 import { useStore } from '../state/store';
@@ -49,7 +49,11 @@ function Pause({ onLeave, onResume }: { onLeave: () => void; onResume: () => voi
     <div className="panel" style={{ width: 'min(420px, 100%)', textAlign: 'center' }}>
       <h2>PAUSED</h2>
       <p className="hint">The game keeps running for everyone else. He does not wait.</p>
-      {lobby && <p className="hint">LOBBY {lobby.code}</p>}
+      {lobby && (
+        <p className="hint">
+          LOBBY {lobby.code} · DIFFICULTY {DIFFICULTY[lobby.settings.difficulty].label}
+        </p>
+      )}
       <nav className="menu" style={{ margin: '16px auto' }}>
         <button onClick={onResume}>RESUME</button>
         <button onClick={() => set({ modal: { kind: 'journal' } })}>JOURNAL</button>

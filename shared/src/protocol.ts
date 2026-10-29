@@ -288,7 +288,8 @@ export type GameEvent =
   | { k: 'flash'; pos: [number, number, number]; by: string }
   | { k: 'escape'; player: string; route: EscapeRoute }
   | { k: 'teleport'; player: string; pos: [number, number, number]; yaw: number; seq: number }
-  | { k: 'stumble'; player: string };
+  | { k: 'stumble'; player: string }
+  | { k: 'hideCheck'; i: number };
 
 export interface MoveMsg {
   seq: number;

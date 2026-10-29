@@ -1,7 +1,7 @@
 /** Assembles the static estate (architecture, furniture, decor, fixtures, exterior). */
 import * as THREE from 'three';
 import type { Level } from '@nower/shared';
-import { buildFurniture, type ContainerView } from './world/furniture';
+import { buildFurniture, type ContainerView, type HideView } from './world/furniture';
 import { buildLevelMesh, buildRoof } from './world/LevelMesh';
 import { MeshBuilder } from './world/MeshBuilder';
 import { buildDecor, buildEnvironment, buildFixtures } from './world/props';
@@ -10,6 +10,7 @@ import { warmTextures } from './world/textures';
 export interface StaticWorld {
   root: THREE.Group;
   containers: ContainerView[];
+  hides: HideView[];
   sky: THREE.Mesh;
   /** Merged chunk meshes with their floor index, for floor/distance culling. */
   chunks: { mesh: THREE.Mesh; floor: number; center: THREE.Vector3; radius: number; exterior: boolean }[];
@@ -26,6 +27,11 @@ export async function buildStaticWorld(level: Level, progress: (text: string, p:
       c.target = 0;
       c.t = 0.0001;
       c.update(1);
+    }
+    for (const h of cached.hides) {
+      h.occupiedByMe = false;
+      h.searchedUntil = 0;
+      h.update(1, 0);
     }
     return cached;
   }
@@ -63,6 +69,6 @@ export async function buildStaticWorld(level: Level, progress: (text: string, p:
     void mat;
     chunks.push({ mesh: m, floor: m.userData.floor, center: bs.center.clone(), radius: bs.radius, exterior: false });
   });
-  cached = { root, containers: furn.containers, sky, chunks };
+  cached = { root, containers: furn.containers, hides: furn.hides, sky, chunks };
   return cached;
 }

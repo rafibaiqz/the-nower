@@ -6,6 +6,7 @@
 import { randomBytes } from 'node:crypto';
 import type { Server, Socket } from 'socket.io';
 import {
+  DEFAULT_DIFFICULTY,
   DIFFICULTY,
   LOBBY_CODE_ALPHABET,
   LOBBY_CODE_LENGTH,
@@ -157,7 +158,7 @@ export class LobbyManager {
       code,
       hostId: id,
       members: new Map([[id, member]]),
-      settings: { difficulty: 'normal', maxPlayers: config.maxPlayers },
+      settings: { difficulty: DEFAULT_DIFFICULTY, maxPlayers: config.maxPlayers },
       state: 'LOBBY',
       match: null,
       createdAt: Date.now(),

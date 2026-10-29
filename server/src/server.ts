@@ -6,6 +6,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { Server, type Socket } from 'socket.io';
+import type { Difficulty } from '@nower/shared';
 import { config } from './config';
 import { LobbyManager } from './lobby/LobbyManager';
 import { log } from './log';
@@ -155,7 +156,7 @@ function wire(socket: Socket, lobbies: LobbyManager) {
 
   socket.on('lobby:settings', (p: unknown, cb: unknown) => {
     if (!allow('lobby') || !isObj(p)) return;
-    const patch: { difficulty?: 'easy' | 'normal' | 'hard' | 'extreme'; maxPlayers?: number } = {};
+    const patch: { difficulty?: Difficulty; maxPlayers?: number } = {};
     if (p.difficulty !== undefined) {
       const d = cleanDifficulty(p.difficulty);
       if (!d) return ack(cb)({ ok: false, error: 'Unknown difficulty.' });

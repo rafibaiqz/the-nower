@@ -35,6 +35,51 @@ async function waitHealthy() {
   throw new Error('server did not start');
 }
 
+/** Walks a player with real keyboard input (server-validated) towards a point, steering by yaw. */
+async function walkTo(page, x, z, tol = 0.35) {
+  await page.keyboard.down('KeyW');
+  try {
+    for (let i = 0; i < 160; i++) {
+      const done = await page.evaluate(({ x, z, tol }) => {
+        const g = window.__nower.gameRef.current;
+        const dx = x - g.ctrl.x;
+        const dz = z - g.ctrl.z;
+        g.ctrl.yaw = Math.atan2(-dx, -dz);
+        return Math.hypot(dx, dz) < tol;
+      }, { x, z, tol });
+      if (done) break;
+      await sleep(60);
+    }
+  } finally {
+    await page.keyboard.up('KeyW');
+  }
+  await sleep(300);
+}
+
+/** Renders the current camera view and returns mean luminance (0..255) and the share of non-black pixels. */
+function viewStats(page) {
+  return page.evaluate(() => {
+    const g = window.__nower.gameRef.current;
+    const r = g.renderer;
+    const gl = r.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    if (g.post) g.post.renderFrame();
+    else r.render(g.scene, g.camera);
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let sum = 0;
+    let lit = 0;
+    const n = w * h;
+    for (let i = 0; i < px.length; i += 16) {
+      const l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+      sum += l;
+      if (l > 12) lit++;
+    }
+    return { mean: Math.round((sum / (n / 4)) * 10) / 10, lit: Math.round((lit / (n / 4)) * 1000) / 1000 };
+  });
+}
+
 async function main() {
   await waitHealthy();
   const browser = await chromium.launch({
@@ -73,6 +118,17 @@ async function main() {
   await a.waitForFunction(() => document.querySelectorAll('.players li .tag.host').length === 1 && document.body.innerText.includes('Noer'));
   check(true, 'second player joined and both see the lobby');
 
+  // difficulty: MEDIUM by default; the host picks HARD; the guest sees it selected (read-only)
+  const selected = (p) => p.evaluate(() => [...document.querySelectorAll('.diff-card[aria-checked="true"]')].map((e) => e.textContent));
+  check((await selected(b))[0]?.includes('MEDIUM'), 'new lobby defaults to MEDIUM');
+  await a.click('.diff-card:has-text("HARD")');
+  await b.waitForFunction(() => document.querySelector('.diff-card[aria-checked="true"]')?.textContent?.includes('HARD'), null, { timeout: 5000 });
+  const guestView = await b.evaluate(() => {
+    const on = document.querySelector('.diff-card[aria-checked="true"]');
+    return { text: on?.textContent ?? '', mark: on?.querySelector('.diff-mark')?.textContent, others: [...document.querySelectorAll('.diff-card:disabled')].length };
+  });
+  check(guestView.text.includes('SELECTED') && guestView.mark === '◆' && guestView.others === 3, 'guest sees HARD marked selected (glyph + label, not colour only) and cannot change it');
+  await b.screenshot({ path: `${shots}/1b-lobby-guest-difficulty.png` });
 
   await b.click('button:has-text("READY")');
   await a.waitForSelector('button:has-text("START GAME"):not([disabled])');
@@ -101,6 +157,8 @@ async function main() {
     });
   const sa = await st(a);
   const sb = await st(b);
+  const diffs = await Promise.all([a, b].map((p) => p.evaluate(() => window.__nower.gameRef.current.world.difficulty)));
+  check(diffs[0] === 'hard' && diffs[1] === 'hard', `both clients play the host's choice (${diffs.join('/')})`);
   check(sa.phase === 'PLAYING' && sb.phase === 'PLAYING', `match is PLAYING on both clients (${sa.phase}/${sb.phase})`);
   check(sa.players.length === 2 && sb.players.length === 2, 'both clients know both players');
   await a.screenshot({ path: `${shots}/3-bedroom.png` });
@@ -153,6 +211,64 @@ async function main() {
   await sleep(1000);
   await a.screenshot({ path: `${shots}/5-door.png` });
 
+  // ---------------- hiding: wardrobe and under the bed, observed by the other player ----------------
+  const hideFlow = async (kind, standX, standZ) => {
+    await walkTo(a, 30.5, 26.0);
+    await walkTo(a, standX, standZ, 0.25);
+    const info = await a.evaluate((kind) => {
+      const g = window.__nower.gameRef.current;
+      const L = g.world.level;
+      const h = L.hides.find((hh) => hh.kind === kind && L.rooms[hh.room].spec.id === 'westbed');
+      const fu = L.furniture[h.furn];
+      g.ctrl.yaw = Math.atan2(-(fu.center[0] - g.ctrl.x), -(fu.center[2] - g.ctrl.z));
+      g.ctrl.pitch = kind === 'bed' ? -0.6 : 0;
+      return { i: h.index };
+    }, kind);
+    await sleep(600);
+    const prompt = await a.evaluate(() => window.__nower.store.getState().hud.prompt);
+    check(!!prompt && prompt.includes('HIDE'), `${kind}: prompt "${prompt}"`);
+    await a.keyboard.press('KeyE');
+    await sleep(2800);
+    const inside = await a.evaluate((i) => {
+      const g = window.__nower.gameRef.current;
+      const hv = g.static.hides[i];
+      return { status: g.world.me.status, hide: g.world.me.hide, camErr: g.camera.position.distanceTo(hv.cam), fov: g.camera.fov };
+    }, info.i);
+    check(inside.status === 'hidden' && inside.hide === info.i, `${kind}: player A is hidden in spot ${info.i}`);
+    check(inside.camErr < 0.02, `${kind}: camera sits at the in-furniture viewpoint (error ${inside.camErr.toFixed(3)}m, fov ${inside.fov})`);
+    const view = await viewStats(a);
+    check(view.mean >= 5 && view.lit >= 0.15, `${kind}: view is not black (mean luminance ${view.mean}, ${Math.round(view.lit * 100)}% lit pixels)`);
+    await a.screenshot({ path: `${shots}/8-hide-${kind}.png` });
+    const fromB = await b.evaluate(({ id, i }) => {
+      const g = window.__nower.gameRef.current;
+      return { occupant: g.world.hides[i], status: g.world.players.get(id).status, modelVisible: g.remotes.get(id).model.root.visible };
+    }, { id: sa.me, i: info.i });
+    check(fromB.occupant === sa.me && fromB.status === 'hidden' && !fromB.modelVisible, `${kind}: player B sees A hidden there (model concealed)`);
+    // look limits: a huge mouse sweep is clamped to the hiding place's range
+    const look = await a.evaluate(async (i) => {
+      const g = window.__nower.gameRef.current;
+      g.input.locked = true;
+      g.input.dx = 5000;
+      await new Promise((r) => setTimeout(r, 200));
+      g.input.locked = document.pointerLockElement === g.renderer.domElement;
+      return { yaw: g.hideLook.yaw, range: g.static.hides[i].yawRange };
+    }, info.i);
+    check(Math.abs(Math.abs(look.yaw) - look.range) < 1e-6, `${kind}: looking around is limited to ±${look.range} rad`);
+    await a.keyboard.press('KeyE');
+    await sleep(1500);
+    const out = await a.evaluate(() => {
+      const g = window.__nower.gameRef.current;
+      return { status: g.world.me.status, eye: g.camera.position.y - g.ctrl.y };
+    });
+    const fromB2 = await b.evaluate((id) => {
+      const g = window.__nower.gameRef.current;
+      return { status: g.world.players.get(id).status, modelVisible: g.remotes.get(id).model.root.visible };
+    }, sa.me);
+    check(out.status === 'free' && out.eye > 1.3 && fromB2.status === 'free' && fromB2.modelVisible, `${kind}: leaving restores movement and the standing camera, on both clients`);
+  };
+  await hideFlow('wardrobe', 31.5, 27.5);
+  await hideFlow('bed', 29.5, 26.4);
+
   // look around the house a little for screenshots
   await a.evaluate(() => {
     const g = window.__nower.gameRef.current;
@@ -169,7 +285,7 @@ async function main() {
       }),
     );
   const fps = (await st(a)).fps;
-  console.log(`      client A fps (software renderer): ${fps}`);
+  console.log(`      client A fps (two game windows open): ${fps}`);
 
   // audio: unlocked by the menu click, music layer reacting to the game
   const au = await a.evaluate(() => ({ state: window.__nower.audio.ctx?.state, music: window.__nower.audio.music?.current }));

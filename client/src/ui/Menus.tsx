@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { DIFFICULTY, DIFFICULTIES, LOBBY_CODE_LENGTH, MAX_NAME_LENGTH, type Difficulty } from '@nower/shared';
+import { DEFAULT_DIFFICULTY, LOBBY_CODE_LENGTH, MAX_NAME_LENGTH, type Difficulty } from '@nower/shared';
+import { DifficultyPicker } from './DifficultyPicker';
 import { audio } from '../game/audio/AudioEngine';
 import { SERVER_URL, net } from '../net/net';
 import { useStore, type Quality } from '../state/store';
@@ -127,7 +128,7 @@ function NameField() {
 
 export function CreateLobby() {
   const { go, name } = useStore();
-  const [difficulty, setDifficulty] = useState<Difficulty>('normal');
+  const [difficulty, setDifficulty] = useState<Difficulty>(DEFAULT_DIFFICULTY);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const create = async () => {
@@ -149,17 +150,7 @@ export function CreateLobby() {
       <div className="panel">
         <h2>CREATE LOBBY</h2>
         <NameField />
-        <div className="field">
-          <label>DIFFICULTY</label>
-          <div className="diff-grid">
-            {DIFFICULTIES.map((d) => (
-              <button key={d} className={d === difficulty ? 'on' : ''} onClick={() => setDifficulty(d)}>
-                {DIFFICULTY[d].label}
-              </button>
-            ))}
-          </div>
-          <span className="hint">{DIFFICULTY[difficulty].description}</span>
-        </div>
+        <DifficultyPicker value={difficulty} onChange={setDifficulty} />
         {err && <div className="error">{err}</div>}
         <div className="row">
           <button className="btn small" onClick={() => go('menu')}>

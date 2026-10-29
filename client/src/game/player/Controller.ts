@@ -187,7 +187,7 @@ export class Controller {
     this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
   }
 
-  update(dt: number, input: Input, opts: { canMove: boolean; heavy: boolean; obstacles: CircleObstacle[]; now: number }) {
+  update(dt: number, input: Input, opts: { canMove: boolean; heavy: boolean; obstacles: CircleObstacle[]; now: number; staminaDrain: number }) {
     const fwd = (input.has('KeyW', 'ArrowUp') ? 1 : 0) - (input.has('KeyS', 'ArrowDown') ? 1 : 0);
     const strafe = (input.has('KeyD', 'ArrowRight') ? 1 : 0) - (input.has('KeyA', 'ArrowLeft') ? 1 : 0);
     this.crouch = opts.canMove && input.has('ControlLeft', 'ControlRight', 'KeyC');
@@ -196,7 +196,7 @@ export class Controller {
     if (this.exhausted && this.stamina > 0.35) this.exhausted = false;
     this.sprinting = moving && wantsSprint && this.stamina > 0.02 && !this.exhausted;
     if (this.sprinting) {
-      this.stamina = Math.max(0, this.stamina - STAMINA_DRAIN * dt);
+      this.stamina = Math.max(0, this.stamina - STAMINA_DRAIN * opts.staminaDrain * dt);
       if (this.stamina <= 0.01) this.exhausted = true;
     } else this.stamina = Math.min(1, this.stamina + STAMINA_REGEN * dt * (moving ? 0.7 : 1.2));
 

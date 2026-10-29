@@ -21,7 +21,7 @@ function runUntil(ctx: Ctx, seconds: number, pred: () => boolean) {
 
 describe('The Nower — patrol and hearing', () => {
   it('patrols the mansion on his own', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     standAt(ctx, 'p1', 3, 23, 23); // players stay silent upstairs
     wakeAt(ctx, 40.5, -4, 33.5);
     const start = { x: ctx.match.enemy.x, z: ctx.match.enemy.z };
@@ -37,7 +37,7 @@ describe('The Nower — patrol and hearing', () => {
   });
 
   it('a dropped metal tool attracts him to the right area; crouching nearby does not', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     const { match } = ctx;
     standAt(ctx, 'p1', 2, 58, 38); // corridor, behind the closed kitchen door
     wakeAt(ctx, 58.5, 0, 28.5, 52, 28); // kitchen, facing away
@@ -60,7 +60,7 @@ describe('The Nower — patrol and hearing', () => {
 
 describe('The Nower — vision, chase and search', () => {
   it('seeing a player starts a chase', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     standAt(ctx, 'p1', 2, 52, 46);
     wakeAt(ctx, 43.5, 0, 46.5, 52.5, 46.5);
     const chased = runUntil(ctx, 3, () => ctx.match.enemy.state === 'CHASE');
@@ -69,7 +69,7 @@ describe('The Nower — vision, chase and search', () => {
   });
 
   it('a player behind a wall is not seen', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     standAt(ctx, 'p1', 2, 35, 46); // living room, other side of the hall wall
     wakeAt(ctx, 43.5, 0, 46.5, 35.5, 46.5);
     const chased = runUntil(ctx, 3, () => ctx.match.enemy.state === 'CHASE');
@@ -77,7 +77,7 @@ describe('The Nower — vision, chase and search', () => {
   });
 
   it('losing line of sight leads to a search at the last known position, not omniscience', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     const { match } = ctx;
     standAt(ctx, 'p1', 2, 52, 46);
     wakeAt(ctx, 43.5, 0, 46.5, 52.5, 46.5);
@@ -92,7 +92,7 @@ describe('The Nower — vision, chase and search', () => {
   });
 
   it('hiding unseen breaks detection', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     const { match } = ctx;
     const h = level.hides.find((hh) => level.rooms[hh.room].spec.id === 'guest')!;
     standNear(ctx, 'p1', `hide:${h.index}`);
@@ -104,7 +104,7 @@ describe('The Nower — vision, chase and search', () => {
   });
 
   it('he searches a hiding spot he saw a player enter', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     const { match } = ctx;
     const h = level.hides.find((hh) => hh.kind === 'wardrobe' && level.rooms[hh.room].spec.id === 'master')!;
     standNear(ctx, 'p1', `hide:${h.index}`);
@@ -131,7 +131,7 @@ describe('The Nower — vision, chase and search', () => {
 
 describe('The Nower — capture, rescue and stuns', () => {
   it('captures a player, cages them, and a teammate can rescue', () => {
-    const ctx = makeMatch(2, 'normal');
+    const ctx = makeMatch(2, 'medium');
     const { match } = ctx;
     standAt(ctx, 'p1', 2, 46, 46);
     standAt(ctx, 'p2', 3, 23, 23);
@@ -175,7 +175,7 @@ describe('The Nower — capture, rescue and stuns', () => {
   });
 
   it('the flash camera temporarily disables him', () => {
-    const ctx = makeMatch(1, 'normal');
+    const ctx = makeMatch(1, 'medium');
     const { match } = ctx;
     standAt(ctx, 'p1', 2, 52, 46);
     wakeAt(ctx, 46.5, 0, 46.5, 52.5, 46.5);
@@ -185,7 +185,10 @@ describe('The Nower — capture, rescue and stuns', () => {
     match.testPlace('p1', p.x, p.y, p.z, yaw);
     expect(match.handleUse('p1', yaw, 0).ok).toBe(true);
     expect(match.enemy.state).toBe('TEMPORARILY_DISABLED');
-    ticks(ctx, 7);
+    // still blinded a few seconds later even though the player is right in front of him
+    ticks(ctx, 3);
+    expect(match.enemy.state).toBe('TEMPORARILY_DISABLED');
+    ticks(ctx, 4);
     expect(match.enemy.state).not.toBe('TEMPORARILY_DISABLED');
   });
 

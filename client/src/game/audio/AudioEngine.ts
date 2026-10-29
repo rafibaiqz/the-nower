@@ -23,7 +23,6 @@ export class AudioEngine {
   private reverb!: ConvolverNode;
   private reverbSend!: GainNode;
   private beds: Record<string, GainNode> = {};
-  private zone: Zone = 'mansion';
   private nextEvent = 0;
   music: Music | null = null;
   /** Position resolver for random events (set by the game). */
@@ -268,7 +267,6 @@ export class AudioEngine {
   updateAmbience(zone: Zone, indoors: boolean, nearBuzz: boolean, dt: number) {
     const ctx = this.ctx;
     if (!ctx) return;
-    this.zone = zone;
     const t = ctx.currentTime;
     const outdoor = zone === 'garden' || zone === 'yard' || zone === 'road';
     const target: Record<string, number> = {

@@ -10,7 +10,8 @@ mkdirSync(shots, { recursive: true });
 const server = spawn('node', ['server/dist/index.js'], { env: { ...process.env, PORT: String(PORT), STATIC_DIR: 'client/dist', LOG_LEVEL: 'warn' }, stdio: 'inherit' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const VIEWS = [
+const SETS = {};
+SETS.tour = [
   ['front-exterior', 48.5, 1.8, 76, 0, 0.12],
   ['entrance-hall', 44, 5.6, 42.5, -2.4, -0.35],
   ['grand-stair', 48.5, 1.7, 55, 0, 0.05],
@@ -26,6 +27,37 @@ const VIEWS = [
   ['attic', 44, 9.7, 33, -0.9, -0.1],
   ['back-garden', 40, 1.8, 6, -2.6, 0.05],
 ];
+// stairwells and floor openings (where floors meet)
+SETS.stairs = [
+  ['cellar-stair-mid-west', 50.0, -0.6, 29.0, Math.PI / 2, 0.0],
+  ['cellar-stair-mid-east', 49.6, -0.6, 29.0, -Math.PI / 2, 0.0],
+  ['cellar-stair-top-down', 49.9, 1.2, 33.4, 0, -0.35],
+  ['cellar-stair-bottom-up', 49.9, -2.4, 23.4, Math.PI, 0.35],
+  ['back-stair-mid', 71, 3.6, 30.0, 0, 0.0],
+  ['attic-stair-mid', 46.9, 7.6, 30.0, Math.PI / 2, 0.0],
+  ['hall-look-up', 44, 1.6, 50, 0, 0.75],
+  ['grand-stair-mid-side', 48.4, 3.4, 48.0, Math.PI / 2, 0.0],
+  ['sewer-stair-mid', 70.9, -5.2, 44.0, Math.PI / 2, 0.0],
+  ['garage-stair-mid', 88.9, -1.0, 35.5, Math.PI / 2, 0.0],
+];
+// broad audit of areas that are easy to get wrong
+SETS.audit = [
+  ['gallery-balustrade', 44.5, 5.6, 43.0, -2.2, -0.35],
+  ['hall-from-door', 48.5, 1.6, 54.8, 0, 0.15],
+  ['window-reveal-living', 22.2, 1.6, 52.0, 2.2, 0.05],
+  ['front-door-locks', 48.9, 1.6, 52.5, Math.PI, 0.0],
+  ['library-bookcase', 31.0, 1.6, 21.5, -1.3, -0.05],
+  ['boiler-brick-door', 35.4, -2.4, 22.0, 1.2, -0.05],
+  ['servants-panel', 58.5, 5.6, 26.0, 0, 0.0],
+  ['attic-dusty', 34, 9.5, 36, 0.3, -0.12],
+  ['attic-stair-top', 46.9, 9.6, 24.2, Math.PI, -0.5],
+  ['garage-shutter', 83, 1.7, 41, Math.PI, 0.05],
+  ['valve-chamber', 32, -6.4, 46, 0, 0.05],
+  ['sewer-niche', 13, -6.5, 40, 1.57, 0],
+  ['outfall', 11.5, -6.4, 9.5, 0, 0.25],
+  ['conservatory', 70, 1.6, 26.5, -0.6, 0.1],
+];
+const VIEWS = SETS[(process.argv.find((a) => a.startsWith('--set=')) ?? '--set=tour').slice(6)];
 
 async function main() {
   await sleep(1200);

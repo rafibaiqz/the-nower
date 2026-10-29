@@ -449,6 +449,12 @@ export class Game {
       case 'escape':
         if (e.player !== me) audio.music?.stinger('escape');
         break;
+      case 'hideCheck': {
+        // the Nower yanks the wardrobe / cupboard open (or crouches to look under the bed)
+        const hv = this.static?.hides[e.i];
+        if (hv) hv.searchedUntil = performance.now() + 1800;
+        break;
+      }
     }
   }
 
@@ -513,6 +519,9 @@ export class Game {
       this.hideLook = { yaw: 0, pitch: 0 };
       this.breath = 8;
     }
+    if (st === 'hidden' || prev === 'hidden') this.startCamBlend(st === 'hidden' ? 0.45 : 0.35);
+    for (const hv of this.static?.hides ?? []) hv.occupiedByMe = st === 'hidden' && hv.index === me.hide;
+    if (this.held) this.held.visible = st !== 'hidden';
     this.applyStatusCamera(false);
   }
 
@@ -533,9 +542,11 @@ export class Game {
     // mouse look
     const mouse = this.input.consumeMouse();
     if (!cin && !modal) {
-      if (st === 'hidden') {
-        this.hideLook.yaw = Math.max(-0.7, Math.min(0.7, this.hideLook.yaw - mouse.dx * 0.0022 * settings.sensitivity));
-        this.hideLook.pitch = Math.max(-0.4, Math.min(0.4, this.hideLook.pitch - mouse.dy * 0.0022 * settings.sensitivity));
+      if (st === 'hidden' && me.hide >= 0) {
+        const hv = this.static!.hides[me.hide];
+        const inv = settings.invertY ? -1 : 1;
+        this.hideLook.yaw = Math.max(-hv.yawRange, Math.min(hv.yawRange, this.hideLook.yaw - mouse.dx * 0.0022 * settings.sensitivity));
+        this.hideLook.pitch = Math.max(hv.pitchRange[0], Math.min(hv.pitchRange[1], this.hideLook.pitch - mouse.dy * 0.0022 * settings.sensitivity * inv));
       } else this.ctrl.look(mouse.dx, mouse.dy, settings.sensitivity, settings.invertY);
     }
 
@@ -549,7 +560,7 @@ export class Game {
       const fz = -Math.cos(c.yaw);
       for (const o of [-1.45, 0, 1.45]) obstacles.push({ x: c.x + fx * o, z: c.z + fz * o, r: 0.95, f: 2 });
     }
-    if (st === 'free' || st === 'caged') this.ctrl.update(dt, this.input, { canMove, heavy, obstacles, now: performance.now() });
+    if (st === 'free' || st === 'caged') this.ctrl.update(dt, this.input, { canMove, heavy, obstacles, now: performance.now(), staminaDrain: DIFFICULTY[w.difficulty].staminaDrainMultiplier });
     this.creakCheck();
 
     // network: movement + car input at a fixed rate
@@ -598,6 +609,13 @@ export class Game {
     else this.renderer.render(this.scene, this.camera);
   }
 
+  /** Short eased blend between camera poses when entering / leaving a hiding place. */
+  private camBlend: { pos: THREE.Vector3; quat: THREE.Quaternion; t: number; dur: number } | null = null;
+
+  private startCamBlend(dur: number) {
+    this.camBlend = { pos: this.camera.position.clone(), quat: this.camera.quaternion.clone(), t: 0, dur };
+  }
+
   /** Debug-only free camera (enabled through window.__nower with ?debug). Purely visual. */
   debugCam: { x: number; y: number; z: number; yaw: number; pitch: number } | null = null;
 
@@ -612,7 +630,6 @@ export class Game {
     const w = this.world;
     const me = w.me;
     const st = me.status;
-    const L = w.level;
     const cam = this.camera;
     cam.fov += (store.getState().settings.fov - cam.fov) * Math.min(1, dt * 4);
     cam.updateProjectionMatrix();
@@ -630,17 +647,21 @@ export class Game {
       if (shot.cue === 'wake') audio.breath(0.8);
       if (shot.cue === 'distant') audio.phantom();
       this.screenFlash = Math.max(this.screenFlash, shot.flash);
-      store.getState().set({ hud: { ...store.getState().hud }, introPlaying: cin.kind === 'intro' });
+      if (store.getState().introPlaying !== (cin.kind === 'intro')) store.getState().set({ introPlaying: cin.kind === 'intro' });
       this.cineOverlay = { fade: shot.fade, title: shot.title, subtitle: shot.subtitle };
       if (cin.done) this.endCinematic();
       return;
     }
     this.cineOverlay = null;
     if (st === 'hidden' && me.hide >= 0) {
-      const h = L.hides[me.hide];
-      const eye = h.kind === 'bed' ? 0.28 : h.kind === 'niche' ? 1.25 : 1.5;
-      cam.position.set(h.inside[0], h.inside[1] + eye, h.inside[2]);
-      cam.rotation.set(this.hideLook.pitch, h.yaw + this.hideLook.yaw, 0);
+      // first-person view from inside the hollow furniture: behind the wardrobe's door gap, behind
+      // the cupboard louvres, under the bed frame or inside the sewer niche
+      const hv = this.static!.hides[me.hide];
+      cam.position.copy(hv.cam);
+      cam.rotation.set(this.hideLook.pitch, hv.yaw + this.hideLook.yaw, 0);
+      cam.fov = hv.fov;
+      cam.updateProjectionMatrix();
+      this.applyCamBlend(dt);
       return;
     }
     if (st === 'driving' || st === 'passenger') {
@@ -665,9 +686,23 @@ export class Game {
     if (st === 'climbing') eye = 1.4;
     cam.position.set(this.ctrl.x + sway * Math.cos(this.ctrl.yaw), this.ctrl.y + eye + bob, this.ctrl.z - sway * Math.sin(this.ctrl.yaw));
     cam.rotation.set(this.ctrl.pitch, this.ctrl.yaw, 0);
+    this.applyCamBlend(dt);
     if (this.held) {
       this.held.position.y += ((this.heldType && itemDef(this.heldType).heavy ? -0.45 : -0.28) + bob * 0.4 - this.held.position.y) * Math.min(1, dt * 10);
     }
+  }
+
+  private applyCamBlend(dt: number) {
+    const b = this.camBlend;
+    if (!b) return;
+    b.t += dt / b.dur;
+    if (b.t >= 1) {
+      this.camBlend = null;
+      return;
+    }
+    const k = b.t * b.t * (3 - 2 * b.t);
+    this.camera.position.lerpVectors(b.pos, this.camera.position.clone(), k);
+    this.camera.quaternion.slerpQuaternions(b.quat, this.camera.quaternion.clone(), k);
   }
 
   cineOverlay: { fade: number; title: string | null; subtitle: string | null } | null = null;
@@ -729,6 +764,8 @@ export class Game {
     const w = this.world;
     for (const d of this.doors) d.update(dt);
     for (const c of this.static!.containers) c.update(dt);
+    const nowMs = performance.now();
+    for (const hv of this.static!.hides) if (hv.leaves.length) hv.update(dt, nowMs);
     this.placeContainerItems();
     this.mechs.update(dt);
     this.water.update(dt);
@@ -984,6 +1021,11 @@ export class Game {
   }
 
   private updateFx(dt: number) {
+    // dark adaptation: while hiding (flashlight off, peering out of the dark) the eyes adjust and
+    // exposure eases up for this player's view only; the scene lighting itself is unchanged
+    const hiddenNow = this.world.me.status === 'hidden';
+    const targetExposure = hiddenNow ? 3.0 : 1.15;
+    this.renderer.toneMappingExposure += (targetExposure - this.renderer.toneMappingExposure) * Math.min(1, dt * (hiddenNow ? 1.2 : 3));
     this.pulse = Math.max(0, this.pulse - dt * 0.4);
     this.screenFlash = Math.max(0, this.screenFlash - dt * 2.5);
     const me = this.world.me;
@@ -995,8 +1037,10 @@ export class Game {
       flash: this.screenFlash,
       vignette: 1,
       brightness: store.getState().settings.brightness,
-      hide: hideKind === 'wardrobe' || hideKind === 'locker' ? 1 : hideKind ? 0.55 : 0,
+      hide: hideKind ? 1 : 0,
       desat: me.status === 'caged' ? 0.5 : me.status === 'eliminated' ? 1 : 0,
+      // grain is added before tone mapping: keep its visible strength constant as exposure changes
+      grain: 1.15 / this.renderer.toneMappingExposure,
     });
   }
 

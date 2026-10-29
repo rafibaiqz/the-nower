@@ -16,10 +16,11 @@ const HorrorShader = {
     brightness: { value: 1 },
     hide: { value: 0 },
     desat: { value: 0 },
+    grain: { value: 1 },
   },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float time, danger, pulse, flash, vignette, brightness, hide, desat;
+    uniform sampler2D tDiffuse; uniform float time, danger, pulse, flash, vignette, brightness, hide, desat, grain;
     varying vec2 vUv;
     float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898,78.233)) + time*7.13) * 43758.5453); }
     void main(){
@@ -37,11 +38,10 @@ const HorrorShader = {
       col = mix(col, vec3(lum), 0.25 + desat * 0.6);
       float v = smoothstep(0.85, 0.25, length(dc) * (1.0 + danger * 0.35)) ;
       col *= mix(1.0, v, 0.75 * vignette);
-      col += (rand(uv) - 0.5) * (0.035 + danger * 0.04);
+      col += (rand(uv) - 0.5) * (0.035 + danger * 0.04) * grain;
       col = mix(col, vec3(lum * 0.9, 0.0, 0.0) + vec3(0.25,0.0,0.0) * pulse, pulse * 0.6);
-      // hiding: dark slit framing
-      float slit = smoothstep(0.08, 0.0, abs(dc.y) - 0.18);
-      col *= mix(1.0, slit, hide);
+      // hiding: slightly heavier vignette only; the framing comes from the real furniture geometry
+      col *= mix(1.0, smoothstep(0.95, 0.35, length(dc)), hide * 0.35);
       col += flash;
       gl_FragColor = vec4(col, 1.0);
     }`,
@@ -62,7 +62,7 @@ export class PostFX {
   setSize(w: number, h: number) {
     this.composer.setSize(w, h);
   }
-  set(u: Partial<Record<'time' | 'danger' | 'pulse' | 'flash' | 'vignette' | 'brightness' | 'hide' | 'desat', number>>) {
+  set(u: Partial<Record<'time' | 'danger' | 'pulse' | 'flash' | 'vignette' | 'brightness' | 'hide' | 'desat' | 'grain', number>>) {
     for (const [k, v] of Object.entries(u)) this.pass.uniforms[k].value = v;
   }
   renderFrame() {

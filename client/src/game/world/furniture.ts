@@ -3,7 +3,7 @@
  * parts of containers (drawers, cupboard doors, lids) are separate animated objects.
  */
 import * as THREE from 'three';
-import { Rng, furnSpec, type Container, type Furniture, type Level } from '@nower/shared';
+import { Rng, furnSpec, type Container, type Furniture, type HideKind, type Level } from '@nower/shared';
 import { MeshBuilder, pk, resolveMat } from './MeshBuilder';
 
 const ROT_ANGLE = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
@@ -35,9 +35,106 @@ export interface ContainerView {
   update(dt: number): void;
 }
 
-export function buildFurniture(level: Level, mb: MeshBuilder): { containers: ContainerView[]; dynamic: THREE.Group } {
+/**
+ * A hiding place as seen from inside: where the hidden player's camera sits (inside the hollow
+ * furniture, behind the door gap / louvres / under the frame), how far it may turn, and the
+ * animated door leaves (ajar for the occupant, flung open when the Nower checks it).
+ */
+export interface HideView {
+  index: number;
+  kind: HideKind;
+  cam: THREE.Vector3;
+  yaw: number;
+  yawRange: number;
+  pitchRange: [number, number];
+  fov: number;
+  leaves: { pivot: THREE.Object3D; sign: number; angle: number; target: number; ajar: number }[];
+  searchedUntil: number;
+  occupiedByMe: boolean;
+  update(dt: number, now: number): void;
+}
+
+const HIDE_CAM: Record<HideKind, { pos: [number, number, number]; yawRange: number; pitch: [number, number]; fov: number }> = {
+  wardrobe: { pos: [0, 1.55, 0.27], yawRange: 0.55, pitch: [-0.35, 0.3], fov: 62 },
+  locker: { pos: [0.03, 1.55, 0.2], yawRange: 0.5, pitch: [-0.3, 0.25], fov: 62 },
+  bed: { pos: [0, 0.17, 0.45], yawRange: 1.05, pitch: [-0.3, 0.22], fov: 70 },
+  niche: { pos: [0, 1.25, -0.08], yawRange: 0.8, pitch: [-0.35, 0.35], fov: 66 },
+};
+
+function hideView(level: Level, fu: Furniture, world: THREE.Matrix4, zone: string): { view: HideView; holder: THREE.Object3D } {
+  const h = level.hides[fu.hide!];
+  const cfg = HIDE_CAM[h.kind];
+  const holder = new THREE.Group();
+  holder.matrixAutoUpdate = false;
+  holder.matrix.copy(world);
+  const leaves: HideView['leaves'] = [];
+  const wood = resolveMat(h.kind === 'locker' && !(zone === 'mansion' || zone === 'attic') ? 'rust' : 'wood_dark');
+  const brass = resolveMat(BRASS);
+  const piece = (parent: THREE.Object3D, w: number, hgt: number, d: number, x: number, y: number, z: number, mat = wood) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, hgt, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  };
+  if (h.kind === 'wardrobe') {
+    // two leaves hinged at the outer edges, 4 cm apart in the middle
+    for (const side of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(side * 0.93, 0, 0.375);
+      const w = 0.905;
+      const cx = -side * (w / 2);
+      piece(pivot, w, 1.95, 0.03, cx, 1.075, 0);
+      piece(pivot, w * 0.72, 0.7, 0.012, cx, 0.6, 0.02, resolveMat('trim'));
+      piece(pivot, w * 0.72, 0.7, 0.012, cx, 1.55, 0.02, resolveMat('trim'));
+      piece(pivot, 0.025, 0.12, 0.03, -side * (w - 0.06), 1.12, 0.03, brass);
+      holder.add(pivot);
+      leaves.push({ pivot, sign: side, angle: 0, target: 0, ajar: side > 0 ? 0.36 : 0.06 });
+    }
+  } else if (h.kind === 'locker') {
+    // one door with a louvred vent at eye height: slats with real gaps between them
+    const pivot = new THREE.Group();
+    pivot.position.set(-0.43, 0, 0.375);
+    const w = 0.85;
+    piece(pivot, w, 1.32, 0.03, w / 2, 0.68, 0);
+    piece(pivot, w, 0.2, 0.03, w / 2, 1.9, 0);
+    piece(pivot, 0.1, 0.48, 0.03, 0.05, 1.56, 0);
+    piece(pivot, 0.1, 0.48, 0.03, w - 0.05, 1.56, 0);
+    for (let i = 0; i < 5; i++) piece(pivot, w - 0.2, 0.025, 0.05, w / 2, 1.36 + i * 0.1, 0.005, wood).rotation.x = -0.35;
+    piece(pivot, 0.025, 0.12, 0.03, w - 0.1, 1.0, 0.03, brass);
+    holder.add(pivot);
+    leaves.push({ pivot, sign: -1, angle: 0, target: 0, ajar: 0.05 });
+  }
+  const view: HideView = {
+    index: h.index,
+    kind: h.kind,
+    cam: new THREE.Vector3(...cfg.pos).applyMatrix4(world),
+    yaw: h.yaw,
+    yawRange: cfg.yawRange,
+    pitchRange: cfg.pitch,
+    fov: cfg.fov,
+    leaves,
+    searchedUntil: 0,
+    occupiedByMe: false,
+    update(dt, now) {
+      const searched = now < this.searchedUntil;
+      for (const l of this.leaves) {
+        l.target = searched ? 1.55 : this.occupiedByMe ? l.ajar : 0;
+        const k = Math.min(1, dt * (searched ? 9 : 4));
+        l.angle += (l.target - l.angle) * k;
+        // left leaf extends +x from its hinge, right leaf -x: both swing outwards (+z)
+        l.pivot.rotation.y = l.sign > 0 ? l.angle : -l.angle;
+      }
+    },
+  };
+  return { view, holder };
+}
+
+export function buildFurniture(level: Level, mb: MeshBuilder): { containers: ContainerView[]; hides: HideView[]; dynamic: THREE.Group } {
   const dynamic = new THREE.Group();
   const containers: ContainerView[] = [];
+  const hides: HideView[] = [];
   for (const fu of level.furniture) {
     const spec = furnSpec(fu.t);
     const base = level.floors[fu.f].base;
@@ -74,6 +171,12 @@ export function buildFurniture(level: Level, mb: MeshBuilder): { containers: Con
     };
     const builder = BUILDERS[fu.t];
     builder?.(p);
+    if (fu.hide !== undefined) {
+      const { view, holder } = hideView(level, fu, world, zone);
+      if (view.leaves.length) dynamic.add(holder);
+      holder.updateMatrixWorld(true);
+      hides.push(view);
+    }
     if (fu.container !== undefined) {
       const c = level.containers[fu.container];
       const view = containerPart(c, fu, spec.w, spec.d, spec.h, world, zone);
@@ -81,7 +184,8 @@ export function buildFurniture(level: Level, mb: MeshBuilder): { containers: Con
       containers.push(view);
     }
   }
-  return { containers, dynamic };
+  hides.sort((a, b) => a.index - b.index);
+  return { containers, hides, dynamic };
 }
 
 /** Moving part of a container in local furniture space. */
@@ -143,41 +247,50 @@ function containerPart(c: Container, fu: Furniture, w: number, d: number, h: num
 
 const BUILDERS: Record<string, (p: P) => void> = {
   bed: (p) => {
+    // raised on legs with an open foot end, so the space underneath is a usable hiding view
     const W = 1.9;
     const L = 1.95;
-    p.box('trim', 0, 0.32, 0, W, 0.14, L);
     for (const [x, z] of [
       [-W / 2 + 0.05, -L / 2 + 0.05],
       [W / 2 - 0.05, -L / 2 + 0.05],
       [-W / 2 + 0.05, L / 2 - 0.05],
       [W / 2 - 0.05, L / 2 - 0.05],
     ])
-      p.box('trim', x, 0.2, z, 0.08, 0.4, 0.08);
-    p.box('trim', 0, 0.8, -L / 2 + 0.04, W, 1.2, 0.08);
-    p.box('trim', 0, 0.45, L / 2 - 0.04, W, 0.5, 0.06);
-    p.box('sheet', 0, 0.5, 0.02, W - 0.1, 0.22, L - 0.12);
-    p.box('sheet', -0.45, 0.66, -L / 2 + 0.3, 0.7, 0.14, 0.35);
-    p.box('sheet', 0.45, 0.66, -L / 2 + 0.3, 0.7, 0.14, 0.35);
-    p.box(p.rng.chance(0.5) ? 'fabric' : 'fabric_green', 0, 0.63, 0.35, W - 0.05, 0.06, L * 0.6);
-    // the blanket hangs down the sides, hiding the space underneath
-    p.box('fabric', -W / 2 + 0.01, 0.42, 0.35, 0.03, 0.42, L * 0.6);
-    p.box('fabric', W / 2 - 0.01, 0.42, 0.35, 0.03, 0.42, L * 0.6);
+      p.box('trim', x, 0.21, z, 0.08, 0.42, 0.08);
+    p.box('trim', 0, 0.42, 0, W, 0.12, L);
+    // slats seen from underneath
+    for (let i = 0; i < 6; i++) p.box('wood_rough', 0, 0.355, -L / 2 + 0.2 + i * 0.31, W - 0.1, 0.02, 0.08);
+    p.box('trim', 0, 0.88, -L / 2 + 0.04, W, 1.05, 0.08);
+    // the footboard is a rail above the frame: open below it
+    p.box('trim', 0, 0.62, L / 2 - 0.04, W, 0.28, 0.06);
+    p.box('sheet', 0, 0.58, 0.02, W - 0.1, 0.2, L - 0.12);
+    p.box('sheet', -0.45, 0.74, -L / 2 + 0.3, 0.7, 0.14, 0.35);
+    p.box('sheet', 0.45, 0.74, -L / 2 + 0.3, 0.7, 0.14, 0.35);
+    p.box(p.rng.chance(0.5) ? 'fabric' : 'fabric_green', 0, 0.7, 0.35, W - 0.05, 0.06, L * 0.6);
+    // the blanket hangs over the sides but stops above the frame's underside
+    p.box('fabric', -W / 2 + 0.01, 0.55, 0.35, 0.03, 0.3, L * 0.6);
+    p.box('fabric', W / 2 - 0.01, 0.55, 0.35, 0.03, 0.3, L * 0.6);
   },
   wardrobe: (p) => {
-    p.box('trim', 0, 1.1, -0.05, 1.9, 2.2, 0.8);
-    p.box('trim', 0, 2.25, -0.05, 2.0, 0.1, 0.9);
-    p.box('wood_dark', -0.47, 1.05, 0.36, 0.9, 1.9, 0.04);
-    p.box('wood_dark', 0.47, 1.05, 0.36, 0.9, 1.9, 0.04);
-    p.box(BRASS, -0.06, 1.1, 0.39, 0.03, 0.14, 0.03);
-    p.box(BRASS, 0.06, 1.1, 0.39, 0.03, 0.14, 0.03);
-    p.box(DARK, 0, 1.05, 0.38, 0.03, 1.9, 0.02);
+    // hollow carcass (the doors are animated separately); a camera inside sees real inner faces
+    p.box('trim', 0, 1.1, -0.43, 1.9, 2.2, 0.04);
+    p.box('trim', -0.93, 1.1, -0.04, 0.04, 2.2, 0.82);
+    p.box('trim', 0.93, 1.1, -0.04, 0.04, 2.2, 0.82);
+    p.box('trim', 0, 2.18, -0.04, 1.9, 0.04, 0.82);
+    p.box('trim', 0, 2.25, -0.04, 2.0, 0.1, 0.9);
+    p.box('trim', 0, 0.05, -0.04, 1.86, 0.1, 0.82);
+    p.cyl(pk(0x5a4a30, 0.4, 0.7), 0, 1.95, -0.12, 0.015, 0.015, 1.8, 6, 0, Math.PI / 2);
+    // old coats hanging at the sides, leaving room in the middle
+    p.box('fabric', -0.62, 1.38, -0.12, 0.42, 1.1, 0.12);
+    p.box('fabric_green', 0.66, 1.42, -0.14, 0.36, 1.0, 0.1);
   },
   locker: (p) => {
     const m = p.zone === 'mansion' || p.zone === 'attic' ? 'trim' : 'metal';
-    p.box(m, 0, 1.0, -0.05, 0.9, 2.0, 0.8);
-    p.box(m === 'trim' ? 'wood_dark' : 'rust', 0, 1.0, 0.36, 0.84, 1.9, 0.04);
-    for (let i = 0; i < 4; i++) p.box(DARK, 0, 1.6 + i * 0.07, 0.385, 0.5, 0.02, 0.01);
-    p.box(BRASS, 0.32, 1.0, 0.39, 0.03, 0.14, 0.03);
+    p.box(m, 0, 1.0, -0.43, 0.9, 2.0, 0.04);
+    p.box(m, -0.43, 1.0, -0.04, 0.04, 2.0, 0.8);
+    p.box(m, 0.43, 1.0, -0.04, 0.04, 2.0, 0.8);
+    p.box(m, 0, 1.98, -0.04, 0.9, 0.04, 0.8);
+    p.box(m, 0, 0.04, -0.04, 0.86, 0.08, 0.8);
   },
   dresser: (p) => {
     p.box('trim', 0, 0.47, -0.05, 1.9, 0.94, 0.7);
@@ -223,30 +336,32 @@ const BUILDERS: Record<string, (p: P) => void> = {
     for (const dx of [-0.15, 0, 0.15]) p.cyl(CREAM, dx, 1.15, 0, 0.015, 0.015, 0.16);
   },
   sidetable: (p) => {
-    p.box('wood_dark', 0, 0.74, -0.05, 0.8, 0.04, 0.55);
+    p.box('wood_dark', 0, 0.74, -0.04, 0.92, 0.04, 0.8);
     for (const [x, z] of [
-      [-0.35, -0.28],
-      [0.35, -0.28],
-      [-0.35, 0.18],
-      [0.35, 0.18],
+      [-0.41, -0.39],
+      [0.41, -0.39],
+      [-0.41, 0.31],
+      [0.41, 0.31],
     ])
       p.box('trim', x, 0.36, z, 0.05, 0.72, 0.05);
+    p.box('trim', 0, 0.62, -0.04, 0.86, 0.1, 0.74);
     if (p.rng.chance(0.5)) {
       p.cyl(pk(0x30402a, 0.4), 0.2, 0.86, -0.15, 0.05, 0.08, 0.22);
       p.sphere(DARK, 0.2, 1.02, -0.15, 0.08, 0.6);
     }
   },
   chair: (p) => {
-    p.box('trim', 0, 0.45, 0, 0.45, 0.05, 0.45);
+    // a high-backed chair that fills its cell (the whole cell blocks movement)
+    p.box('trim', 0, 0.45, 0, 0.62, 0.05, 0.62);
     for (const [x, z] of [
-      [-0.19, -0.19],
-      [0.19, -0.19],
-      [-0.19, 0.19],
-      [0.19, 0.19],
+      [-0.28, -0.28],
+      [0.28, -0.28],
+      [-0.28, 0.28],
+      [0.28, 0.28],
     ])
-      p.box('trim', x, 0.22, z, 0.04, 0.45, 0.04);
-    p.box('trim', 0, 0.75, -0.2, 0.45, 0.6, 0.04, 0.0);
-    p.box('fabric', 0, 0.48, 0, 0.42, 0.04, 0.42);
+      p.box('trim', x, 0.22, z, 0.05, 0.45, 0.05);
+    p.box('trim', 0, 0.85, -0.29, 0.62, 0.8, 0.05, 0.0);
+    p.box('fabric', 0, 0.49, 0, 0.58, 0.05, 0.58);
   },
   armchair: (p) => {
     p.box('fabric', 0, 0.25, 0, 0.85, 0.5, 0.8);
@@ -487,7 +602,11 @@ const BUILDERS: Record<string, (p: P) => void> = {
     p.cyl('rust', -0.2, 1.7, -0.6, 0.12, 0.12, 1.2, 10, Math.PI / 2);
   },
   niche: (p) => {
-    p.box(DARK, 0, 1.0, -0.2, 0.9, 2.0, 0.5);
+    // a recess in the wall behind iron bars: hollow, so the view out between the bars is real
+    p.box('sewer_brick', 0, 1.0, -0.45, 0.9, 2.0, 0.06);
+    p.box('sewer_brick', -0.45, 1.0, -0.1, 0.06, 2.0, 0.8);
+    p.box('sewer_brick', 0.45, 1.0, -0.1, 0.06, 2.0, 0.8);
+    p.box('sewer_brick', 0, 2.0, -0.1, 0.9, 0.06, 0.8);
     p.box('rust', 0, 2.0, 0.3, 1.0, 0.08, 0.1);
     for (let i = 0; i < 5; i++) p.box(IRON, -0.36 + i * 0.18, 1.0, 0.32, 0.03, 2.0, 0.03);
   },

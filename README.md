@@ -39,7 +39,7 @@ STATIC_DIR=client/dist npm start      # open http://localhost:3001
 | `npm run typecheck` | TypeScript checks for `shared`, `server` and `client` |
 | `npm test` | Unit and integration tests (Vitest): level, placement, sound, AI, routes, live Socket.IO multiplayer |
 | `npm run e2e` | Two-player browser test in real Chrome against the production build (run `npm run build` first) |
-| `npm run photos` | Visual tour: screenshots of key areas into `test-results/tour/` |
+| `npm run photos` | Visual tour: screenshots of key areas into `test-results/tour/`. `-- --set=stairs` photographs every stairwell, `-- --set=audit` a list of risky areas. |
 | `npm run map [floor]` | Prints ASCII maps of the estate (0 sewer … 4 attic) |
 | `npm run test:all` | typecheck, unit tests, build, e2e |
 
@@ -110,8 +110,8 @@ Open the site on two different machines and networks, create a lobby on one, and
 | Esc | Pause menu (settings, how to play, leave) |
 
 - **Sound is everything.** Crouching is nearly silent, walking is heard nearby, sprinting carries. Creaking boards, slammed doors, dropped tools, machines and the car engine are loud. Walls and closed doors muffle sound.
-- **Hiding.** Wardrobes, cupboards, beds and sewer niches hide you. If he saw you go in, he will search that spot. Hold your breath if you've been running.
-- **Caught.** You wake in the basement cage. Teammates can force it open. On Easy, Normal and Hard you can work the latch loose yourself after a delay; on Extreme you can't. Each difficulty allows a limited number of captures.
+- **Hiding.** Wardrobes, cupboards, beds and sewer niches hide you. You keep watching the room from inside: through the crack between the wardrobe doors, through the cupboard louvres, from under the bed frame or between the niche bars, and your eyes adjust to the dark. If he saw you go in, he will open that spot. Hold your breath if you've been running.
+- **Caught.** You wake in the basement cage. Teammates can force it open. On Easy, Medium and Hard you can work the latch loose yourself after a delay; on Extreme you can't. Each difficulty allows a limited number of captures.
 
 ### The three escape routes
 
@@ -177,20 +177,30 @@ Each match gets a server seed. Items go only on valid spawn points (surfaces, dr
 
 ### Difficulty
 
-Easy, Normal, Hard and Extreme change real values in `shared/src/difficulty.ts`: enemy speeds, hearing multiplier, vision range and FOV, detection rate, search time, how often he checks hiding spots, chase persistence, trap count, hint level, captures allowed, self-release delay (none on Extreme), opening grace period, interaction noise, and how strongly he's drawn to escape mechanisms. Long actions also take longer on Hard and Extreme.
+**EASY, MEDIUM (default), HARD and EXTREME.** The host picks one in the lobby; the server validates it, locks it when the match starts and keeps it for players who reconnect. Every value lives in one typed table, `shared/src/difficulty.ts`, and each one changes real behaviour:
+
+- **The Nower:** patrol, investigation and chase speed (always below a sprinting player's), hearing multiplier, vision range and FOV, detection rate, search duration, chase persistence, how often he opens hiding spots he didn't see you enter, and how strongly he's drawn to escape mechanisms in progress.
+- **Players:** hold-to-interact duration, sprint stamina drain, interaction noise, number of traps and snare hold time, captures allowed, and the cage self-release delay (none on Extreme).
+- **Distractions:** how long the flash camera stuns him, how long a car hit knocks him down, and how long a decoy rattles.
+- **Hints:** how explicit objectives and prompts are.
+
+Tests check that every axis gets strictly harder from EASY to EXTREME, that the differences show up in play (a noise behind a door is heard on EXTREME but not EASY; he chases faster; interactions take longer; stuns last the configured time), and that the main entrance is completable on every level.
 
 ## Testing
 
-`npm test` runs 48 tests:
+`npm test` runs 68 tests:
 
 - **Level:** deterministic build, required rooms, doors joining two rooms, every room reachable, collision against walls, stairs between floors, line of sight.
 - **Placement:** 300 seeds fully solvable, no duplicate spawns, categories and zones respected, determinism, unsolvable layouts detected, every critical item has a purpose, puzzle consistency.
 - **Sound:** crouch < walk < sprint, wall and door attenuation, dropped tools heard next door but not across the house, floor slabs.
 - **Routes:** full playthroughs of the main entrance (including the wrong-code alarm), the garage car (including the shutter blocking the car and a two-player drive-out) and the sewer (including path blocking before and after each gate, and the optional grate). Also item and door rules: contested pickups, range and walls, drop safety, disconnect with an item, keys, the one-way bookcase.
 - **AI:** patrols, investigates a dropped tool (and opens doors on the way) while ignoring crouch noise, sight starts a chase, walls block sight, lost sight leads to a local search, unseen hiding is safe, seen hiding gets searched and captured, cage capture and teammate rescue, self-release on Easy, game over on Extreme, flash stun, and a three-minute noisy soak with no NaNs or stuck states.
-- **Multiplayer (real Socket.IO):** create/join, invalid, unknown and full lobbies, host transfer and closing, ready-gated start, identical seeds and item layouts, late-join refusal, movement sync, teleport-hack correction, contested pickup, door sync, disconnect drops the item, token reconnect without duplicates, bogus token refused, health check.
+- **Geometry validator** (`client/test/geometry.test.ts`): builds the real level mesh and casts rays from about 10,000 interior points, including every height along every staircase. With doors closed, every ray must hit a front-facing surface before leaving the house. A ray that escapes is a hole you'd see the outside through; it catches missing walls, gaps between floors and flipped faces.
+- **Hiding validator** (`client/test/hiding.test.ts`): for all 46 hiding places, the camera must not be buried in geometry and must see the room through its opening across the allowed look range.
+- **Difficulty:** the four levels, their progression and fairness, and their measurable effects (see above).
+- **Multiplayer (real Socket.IO):** create/join, invalid, unknown and full lobbies, host transfer and closing, ready-gated start, identical seeds and item layouts, late-join refusal, movement sync, teleport-hack correction, contested pickup, door sync, disconnect drops the item, token reconnect without duplicates, bogus token refused, host-only difficulty that's synced, validated, locked in game and kept on reconnect, a full rematch (end, return to lobby, change difficulty, start again), health check.
 
-`npm run e2e` drives two real Chrome windows through the UI: create and join, ready and start, world load, walking, cross-client sync, the door interaction, audio running, enemy consistency, journal and pause menus, and no page errors. It was also run against the Docker image.
+`npm run e2e` drives two real Chrome windows through the UI: create and join, choosing HARD in the difficulty selector (and the guest seeing it selected), ready and start, world load, walking, cross-client sync, the door interaction, hiding in a wardrobe and under a bed (camera inside the furniture, measured on-screen brightness, look limits, the other player seeing the hider concealed, clean exit), audio running, enemy consistency, journal and pause menus, and no page errors. It was also run against the Docker image.
 
 ## Features implemented
 

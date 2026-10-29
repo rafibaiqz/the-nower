@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DIFFICULTIES, DIFFICULTY } from '@nower/shared';
+import { DifficultyPicker } from './DifficultyPicker';
 import { net } from '../net/net';
 import { useStore } from '../state/store';
 
@@ -64,17 +64,12 @@ export function LobbyRoom() {
             </li>
           ))}
         </ul>
-        <div className="field">
-          <label>DIFFICULTY {host ? '' : '(HOST CHOOSES)'}</label>
-          <div className="diff-grid">
-            {DIFFICULTIES.map((d) => (
-              <button key={d} disabled={!host} className={d === lobby.settings.difficulty ? 'on' : ''} onClick={() => act('lobby:settings', { difficulty: d })}>
-                {DIFFICULTY[d].label}
-              </button>
-            ))}
-          </div>
-          <span className="hint">{DIFFICULTY[lobby.settings.difficulty].description}</span>
-        </div>
+        <DifficultyPicker
+          value={lobby.settings.difficulty}
+          disabled={!host}
+          note={host ? 'you choose for everyone' : 'chosen by the host'}
+          onChange={(d) => act('lobby:settings', { difficulty: d })}
+        />
         {host && (
           <div className="field">
             <label>MAX PLAYERS</label>

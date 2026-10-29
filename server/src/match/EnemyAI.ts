@@ -55,6 +55,8 @@ export interface AIPlayer {
 }
 
 export interface EnemyHost {
+  /** Authoritative match clock (ms). */
+  now: number;
   level: Level;
   tuning: DifficultyTuning;
   dyn: DynWorld;
@@ -67,6 +69,8 @@ export interface EnemyHost {
   isDoorOpen(door: number): boolean;
   isDoorLocked(door: number): boolean;
   capture(playerId: string): void;
+  /** He opens / looks into a hiding place (visual + sound for every client). */
+  checkHide(hide: number): void;
   cue(cue: 'heard' | 'spotted' | 'lost' | 'search' | 'capture' | 'stunned' | 'chase_end', target?: string, pos?: [number, number, number]): void;
   carObstacle(): CircleObstacle | null;
   /** Extra patrol interest (escape mechanisms in progress, caged players, recent noise). */
@@ -208,6 +212,8 @@ export class EnemyAI {
 
   stun(seconds: number) {
     if (this.state === 'DORMANT') return;
+    // use the match clock: the AI's own clock only advances inside update()
+    this.now = this.host.now / 1000;
     this.disabledUntil = this.now + seconds;
     this.path = null;
     this.setState('TEMPORARILY_DISABLED');
@@ -285,7 +291,8 @@ export class EnemyAI {
 
     this.percAcc += dt;
     if (this.percAcc >= PERCEPTION_INTERVAL) {
-      this.perceive(this.percAcc);
+      // blinded by the flash (or knocked down by the car) he perceives nothing until he recovers
+      if (this.state !== 'TEMPORARILY_DISABLED') this.perceive(this.percAcc);
       this.percAcc = 0;
     }
 
@@ -602,6 +609,7 @@ export class EnemyAI {
       }
       this.yaw = yawToward(h.inside[0] - this.x, h.inside[2] - this.z);
       const hideIdx = h.index;
+      this.host.checkHide(hideIdx);
       this.pauseFor(1.3, 'searchHide', () => {
         this.recentlyChecked.set(hideIdx, this.now + 25);
         const occ = this.host.hideOccupant(hideIdx);

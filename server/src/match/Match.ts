@@ -146,7 +146,6 @@ const HOLD_NOISE: Record<string, [number, number]> = {
   wheel_fit: [NOISE.install, 1.0],
 };
 
-const HOLD_MULT: Record<Difficulty, number> = { easy: 0.85, normal: 1, hard: 1.12, extreme: 1.25 };
 
 export class Match implements WorldView, EnemyHost {
   readonly level: Level = getLevel();
@@ -190,7 +189,6 @@ export class Match implements WorldView, EnemyHost {
   private nextEngineNoise = 0;
   private carSentAt = 0;
   private ended = false;
-  private endedAt = 0;
 
   constructor(
     players: MatchPlayerInit[],
@@ -564,6 +562,12 @@ export class Match implements WorldView, EnemyHost {
     return out;
   }
 
+  checkHide(hide: number) {
+    const h = this.level.hides[hide];
+    this.ev({ k: 'hideCheck', i: hide });
+    this.sound('enemy_search_hide', [h.inside[0], h.inside[1] + 1, h.inside[2]]);
+  }
+
   capture(playerId: string) {
     const m = this.mp.get(playerId);
     if (!m) return;
@@ -758,7 +762,7 @@ export class Match implements WorldView, EnemyHost {
     const noRange = inter.action === 'unhide' || inter.action === 'car_exit';
     if (!noRange && !this.inReach(m, ref)) return { ok: false, error: 'Too far away.' };
     if (inter.hold > 0) {
-      const dur = inter.hold * 1000 * HOLD_MULT[this.difficulty] * (inter.action === 'cage_rescue' ? RESCUE_HOLD / 3 : 1);
+      const dur = inter.hold * 1000 * this.tuning.holdMultiplier * (inter.action === 'cage_rescue' ? RESCUE_HOLD / 3 : 1);
       m.hold = { ref, action: inter.action, start: this.now, dur, nextNoise: this.now + 300 };
       m.flags |= PF.INTERACTING;
       this.ev({ k: 'hold', player: playerId, target: ref, label: inter.label, dur });
@@ -1277,7 +1281,7 @@ export class Match implements WorldView, EnemyHost {
         m.pub.held = null;
         this.ev({ k: 'item', s: { ...it } });
         this.pubChanged(m);
-        this.decoys.push({ id: it.id, x: p.x, y: p.y, z: p.z, start: this.now + 2000, end: this.now + 9000, next: this.now + 2000 });
+        this.decoys.push({ id: it.id, x: p.x, y: p.y, z: p.z, start: this.now + 2000, end: this.now + 2000 + this.tuning.decoySeconds * 1000, next: this.now + 2000 });
         this.notify('THE DECOY IS WOUND — IT WILL START RATTLING', 'info', playerId);
         return { ok: true };
       }
@@ -1297,7 +1301,7 @@ export class Match implements WorldView, EnemyHost {
         const facing = forwardFromYaw(e.yaw);
         const facesPlayer = (facing.x * -dx + facing.z * -dz) / Math.max(d, 0.01) > 0.1;
         if (d < 9 && ang < 0.55 && facesPlayer && lineOfSight(this.level, this.dyn, m.x, ey, m.z, e.x, e.y + 1.6, e.z)) {
-          e.stun(5.5);
+          e.stun(this.tuning.stunSeconds);
           this.notify('HE REELS FROM THE FLASH — GO!', 'good');
         }
         if (it.charges <= 0) {
@@ -1628,7 +1632,7 @@ export class Match implements WorldView, EnemyHost {
       } else if (hit.kind === 'enemy' && Math.abs(hit.speed) > 3.5) {
         const fw = forwardFromYaw(c.yaw);
         e.pushAway(fw.x * 1.2 + -fw.z * 0.8, fw.z * 1.2 + fw.x * 0.8);
-        e.stun(4);
+        e.stun(this.tuning.impactStunSeconds);
         this.notify('THE CAR SLAMS INTO HIM', 'good');
       } else if (Math.abs(hit.speed) > 4) {
         this.noise(2, c.x, 0.5, c.z, 26, null);
@@ -1708,7 +1712,6 @@ export class Match implements WorldView, EnemyHost {
   private end(result: MatchResult) {
     if (this.ended) return;
     this.ended = true;
-    this.endedAt = this.now;
     this.result = result;
     this.phase = 'ENDED';
     this.alert = 'NONE';

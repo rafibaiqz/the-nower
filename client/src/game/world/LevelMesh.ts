@@ -39,6 +39,18 @@ export function buildLevelMesh(level: Level): THREE.Group {
   const rooms = level.rooms;
   const typeAt = (f: number, x: number, z: number) => (f < 0 || f >= FLOOR_COUNT || x < 0 || z < 0 || x >= W || z >= D ? CT.SOLID : level.floors[f].type[z * W + x]);
   const roomAt = (f: number, x: number, z: number) => (f < 0 || f >= FLOOR_COUNT || x < 0 || z < 0 || x >= W || z >= D ? -1 : level.floors[f].room[z * W + x]);
+  /**
+   * The slab between floor f and f+1 is open above a cell only for the stairwell of a staircase
+   * that starts on floor f, or under the open part of a double-height room. Everywhere else the
+   * slab is solid: the ceiling of f and the floor of f+1 are its two faces.
+   */
+  const openAbove = (f: number, k: number) => {
+    if (f + 1 >= FLOOR_COUNT) return false;
+    const up = level.floors[f + 1];
+    const t = up.type[k];
+    if (t === CT.STAIR) return level.stairs[up.ent[k]].spec.lower === f;
+    return t === CT.VOID && up.room[k] >= 0;
+  };
   const doorRoom = (f: number, x: number, z: number) => {
     const d = level.doors[level.floors[f].ent[z * W + x]];
     return d.rooms[0] >= 0 ? d.rooms[0] : d.rooms[1];
@@ -74,9 +86,7 @@ export function buildLevelMesh(level: Level): THREE.Group {
         if (indoor) {
           const above = f + 1 < FLOOR_COUNT ? level.floors[f + 1] : null;
           const at = above ? above.type[k] : CT.VOID;
-          const open = at === CT.STAIR || (at === CT.VOID && !!above && above.room[k] >= 0);
-          const isStairLower = t === CT.STAIR && level.stairs[g.ent[k]].spec.lower === f;
-          if (!open && !isStairLower) {
+          if (!openAbove(f, k)) {
             const ri = g.room[k];
             const zone = ri >= 0 ? rooms[ri].spec.zone : 'basement';
             const cm = zone === 'attic' || zone === 'garden' ? 'ceiling_wood' : zone === 'basement' || zone === 'sewer' || zone === 'garage' ? 'concrete' : 'ceiling';
@@ -123,9 +133,7 @@ export function buildLevelMesh(level: Level): THREE.Group {
           const spec = ri >= 0 ? rooms[ri].spec : null;
           const mat = spec ? spec.wall : 'stone';
           // extend over the floor slab where the space above is open (double-height hall, stairwells)
-          const above = f + 1 < FLOOR_COUNT ? level.floors[f + 1] : null;
-          const aType = above ? above.type[nz * W + nx] : CT.SOLID;
-          const extend = !!above && (aType === CT.STAIR || (aType === CT.VOID && above.room[nz * W + nx] >= 0));
+          const extend = openAbove(f, nz * W + nx);
           const y1 = base + (extend ? FLOOR_HEIGHT : ch);
           if (window) {
             windowFace(mb, f, axis, at, from, to, base, y1, sign, mat, false);
@@ -161,6 +169,36 @@ export function buildLevelMesh(level: Level): THREE.Group {
         }
       }
     }
+  }
+
+  // ---------------------------------------------------------------- slab edges
+  // Where an open slab (stairwell, gallery void) meets a solid slab over a non-wall cell, close
+  // the gap between this floor's ceiling and the next floor's floor with a vertical face.
+  // Without it the space between storeys is visible (and with it the outside of the house).
+  for (let f = 0; f < FLOOR_COUNT - 1; f++) {
+    const g = level.floors[f];
+    const y0 = g.base + g.ceilH;
+    const y1 = g.base + FLOOR_HEIGHT;
+    for (let z = 0; z < D; z++)
+      for (let x = 0; x < W; x++) {
+        const k = z * W + x;
+        if (!openAbove(f, k)) continue;
+        const sides: [number, number, 'x' | 'z', number, 1 | -1][] = [
+          [x - 1, z, 'x', x, 1],
+          [x + 1, z, 'x', x + 1, -1],
+          [x, z - 1, 'z', z, 1],
+          [x, z + 1, 'z', z + 1, -1],
+        ];
+        for (const [nx, nz, axis, at, sign] of sides) {
+          if (nx < 0 || nz < 0 || nx >= W || nz >= D) continue;
+          const nk = nz * W + nx;
+          if (g.type[nk] === CT.SOLID || openAbove(f, nk)) continue;
+          const ri = g.room[nk] >= 0 ? g.room[nk] : g.room[k];
+          const mat = ri >= 0 && rooms[ri].spec.zone === 'mansion' ? 'trim' : ri >= 0 ? rooms[ri].spec.wall : 'stone';
+          const from = axis === 'x' ? z : x;
+          mb.wall(mat, f, axis, at, from, from + 1, y0, y1, sign);
+        }
+      }
   }
 
   // ---------------------------------------------------------------- stairs
@@ -277,11 +315,21 @@ export function buildLevelMesh(level: Level): THREE.Group {
           for (const y of [0.15, 1.3, 2.55]) mb.box('rust', f, x + 0.5, g.base + y, z + 0.5, alongX ? 1 : 0.08, 0.06, alongX ? 0.08 : 1);
           continue;
         }
-        mb.box('trim', f, x + 0.5, g.base + 1.0, z + 0.5, alongX ? 1.02 : 0.12, 0.08, alongX ? 0.12 : 1.02);
-        mb.box('trim', f, x + 0.5, g.base + 0.08, z + 0.5, alongX ? 1.02 : 0.14, 0.16, alongX ? 0.14 : 1.02);
+        // The whole rail cell blocks movement, so stand the balustrade on the edge that faces the
+        // walkable floor: players stop right at it instead of at an invisible wall in front of it.
+        const walk = (t: number) => t === CT.FLOOR || t === CT.DOOR;
+        let ox = 0.5;
+        let oz = 0.5;
+        if (alongX) {
+          if (walk(typeAt(f, x, z - 1))) oz = 0.08;
+          else if (walk(typeAt(f, x, z + 1))) oz = 0.92;
+        } else if (walk(typeAt(f, x - 1, z))) ox = 0.08;
+        else if (walk(typeAt(f, x + 1, z))) ox = 0.92;
+        mb.box('trim', f, x + ox, g.base + 1.0, z + oz, alongX ? 1.02 : 0.12, 0.08, alongX ? 0.12 : 1.02);
+        mb.box('trim', f, x + ox, g.base + 0.08, z + oz, alongX ? 1.02 : 0.14, 0.16, alongX ? 0.14 : 1.02);
         for (let i = 0; i < 4; i++) {
           const o = (i + 0.5) / 4;
-          mb.box('trim', f, alongX ? x + o : x + 0.5, g.base + 0.55, alongX ? z + 0.5 : z + o, 0.05, 0.9, 0.05);
+          mb.box('trim', f, alongX ? x + o : x + ox, g.base + 0.55, alongX ? z + oz : z + o, 0.05, 0.9, 0.05);
         }
       }
   }
@@ -300,6 +348,22 @@ function windowFace(mb: MeshBuilder, f: number, axis: 'x' | 'z', at: number, fro
   mb.wall(mat, f, axis, at, to - 0.15, to, sill, head, sign);
   const recess = 0.12 * sign;
   mb.wall(exterior ? 'glass_dim' : 'glass_window', f, axis, at - recess, from + 0.15, to - 0.15, sill, head, sign);
+  // reveal: the four faces of the recess between the wall face and the glass
+  const d0 = Math.min(at, at - recess);
+  const d1 = Math.max(at, at - recess);
+  const u0 = from + 0.15;
+  const u1 = to - 0.15;
+  if (axis === 'x') {
+    mb.wall(mat, f, 'z', u0, d0, d1, sill, head, 1);
+    mb.wall(mat, f, 'z', u1, d0, d1, sill, head, -1);
+    mb.hquad('trim', f, d0, u0, d1, u1, sill, true);
+    mb.hquad(mat, f, d0, u0, d1, u1, head, false);
+  } else {
+    mb.wall(mat, f, 'x', u0, d0, d1, sill, head, 1);
+    mb.wall(mat, f, 'x', u1, d0, d1, sill, head, -1);
+    mb.hquad('trim', f, u0, d0, u1, d1, sill, true);
+    mb.hquad(mat, f, u0, d0, u1, d1, head, false);
+  }
   const mid = (from + to) / 2;
   const fy = (sill + head) / 2;
   const fh = head - sill;

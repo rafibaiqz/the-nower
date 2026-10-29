@@ -135,7 +135,6 @@ export function resolveInteraction(view: WorldView, actorId: string, ref: string
   const need = (what: string) => (hints >= 2 ? ` — NEEDS ${what}` : '');
   const [kind, a, b] = ref.split(':');
   const L = view.level;
-  const m = view.mechs;
 
   if (actor.status === 'hidden') return make('unhide', 'E — LEAVE HIDING');
   if (actor.status === 'driving' || actor.status === 'passenger') return make('car_exit', 'E — GET OUT');
